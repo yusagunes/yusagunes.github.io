@@ -156,4 +156,4 @@ Modern CSS features kullanılıyor (`backdrop-filter`, `color-mix()`, custom pro
 
 ## 📝 Lisans
 
-Kişisel kullanım için. Dilediğin gibi düzenleyebilirsin.
+Kişisel kullanım için. Dilediğin gibi düzenleyebilirsin.# yusagunes.github.io
