@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>dbt'de Incremental Modeller — Yusa Güneş</title>
+  <meta name="description" content="merge, insert_overwrite, append. dbt'de her durum için hangi incremental stratejisi daha iyi çalışır?">
+  <meta name="theme-color" content="#ffffff">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%236366f1'/%3E%3Cstop offset='100%25' stop-color='%238b5cf6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='100' height='100' rx='22' fill='url(%23g)'/%3E%3Ctext x='50' y='68' font-size='60' text-anchor='middle' fill='white' font-family='sans-serif' font-weight='700'%3EY%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="../assets/css/main.css">
+  <link rel="stylesheet" href="../assets/css/components.css">
+</head>
+<body>
+
+<a href="#main" class="skip-link">İçeriğe atla</a>
+
+<nav class="nav" aria-label="Ana navigasyon">
+  <div class="container nav-inner">
+    <a href="../index.html" class="nav-logo">
+      <span class="nav-logo-mark">Y</span>
+      <span>Yusa Güneş</span>
+    </a>
+    <ul class="nav-links">
+      <li><a href="../index.html" class="nav-link">Ana sayfa</a></li>
+      <li><a href="../about.html" class="nav-link">Hakkımda</a></li>
+      <li><a href="../resume.html" class="nav-link">Özgeçmiş</a></li>
+      <li><a href="../projects.html" class="nav-link">Projeler</a></li>
+      <li><a href="../blog.html" class="nav-link">Blog</a></li>
+      <li><a href="../contact.html" class="nav-link">İletişim</a></li>
+    </ul>
+    <div class="nav-actions">
+      <button class="theme-toggle" aria-label="Tema değiştir">
+        <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+      </button>
+      <button class="nav-toggle" aria-label="Menüyü aç" aria-expanded="false">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
+    </div>
+  </div>
+</nav>
+
+<main id="main">
+
+<article class="article">
+  <header class="article-header">
+    <div class="article-meta">
+      <time datetime="2026-06-18">18 Haziran 2026</time>
+      <span>·</span>
+      <span>5 dk okuma</span>
+    </div>
+    <h1 class="article-title">dbt'de Incremental Modeller — Doğru Stratejiyi Seçmek</h1>
+    <p class="article-excerpt">merge, insert_overwrite, append. Her durum için hangi strateji daha iyi çalışır?</p>
+    <div class="tag-list" style="justify-content: center;">
+      <span class="chip chip-accent">dbt</span>
+      <span class="chip">Best Practices</span>
+    </div>
+  </header>
+
+  <div class="article-cover" aria-hidden="true">🔧</div>
+
+  <div class="article-body">
+    <p>
+      dbt ile çalışırken en sık düştüğümüz tuzaklardan biri: incremental modeli doğru strateji olmadan kurmak. Tablo her gün milyonlarca satır büyüyorsa ve sen full refresh yapıyorsan, hem warehouse'e hem cebe zarar veriyorsun. Bu yazıda üç ana stratejiyi ve ne zaman hangisini seçmen gerektiğini konuşuyoruz.
+    </p>
+
+    <h2>1. append — Sadece Ekle</h2>
+    <p>
+      En basit strateji: yeni satırları tablonun sonuna ekle. Geçmiş veri hiç değişmez.
+    </p>
+    <pre><code>{{ config(materialized='incremental', incremental_strategy='append') }}
+
+select *
+from {{ source('events', 'raw_events') }}
+{% if is_incremental() %}
+  where event_date &gt; (select max(event_date) from {{ this }})
+{% endif %}</code></pre>
+
+    <p><strong>Ne zaman:</strong> Event log'ları, append-only audit tabloları, immutable veri kaynakları.</p>
+    <p><strong>Ne zaman değil:</strong> Güncellenebilen veriler (status değişen siparişler gibi).</p>
+
+    <h2>2. merge — Upsert</h2>
+    <p>
+      Satırları unique key ile eşleştirir, varsa günceller yoksa ekler. En esnek ama en maliyetli.
+    </p>
+    <pre><code>{{ config(
+    materialized='incremental',
+    incremental_strategy='merge',
+    unique_key='order_id'
+) }}
+
+select *
+from {{ ref('stg_orders') }}
+{% if is_incremental() %}
+  where updated_at &gt; (select max(updated_at) from {{ this }})
+{% endif %}</code></pre>
+
+    <p><strong>Ne zaman:</strong> SCD Type 1, güncellenebilen kayıtlar (orders, users, inventory).</p>
+    <p><strong>Trade-off:</strong> Her merge çalıştırmasında warehouse'de delete+insert olur. Çok büyük tablolarda yavaş olabilir.</p>
+
+    <h2>3. insert_overwrite — Partition Bazlı</h2>
+    <p>
+      BigQuery, Redshift, Spark gibi partition'lı warehouse'lerde çok güçlü. Sadece belirli partition'ları siler ve yeniden yazar.
+    </p>
+    <pre><code>{{ config(
+    materialized='incremental',
+    incremental_strategy='insert_overwrite',
+    partition_by={'field': 'event_date', 'data_type': 'date'},
+    partitions=['event_date >= "2026-06-01"']
+) }}
+
+select *
+from {{ source('events', 'raw_events') }}
+where event_date &gt;= '2026-06-01'</code></pre>
+
+    <p><strong>Ne zaman:</strong> Tarih bazlı event tabloları, partitioning'in doğal yapıldığı durumlar.</p>
+    <p><strong>Avantaj:</strong> Merge'den çok daha ucuz (sadece ilgili partition'lar yeniden yazılır).</p>
+
+    <h2>Hangisini seçeyim?</h2>
+    <div class="card" style="padding: 1.5rem; margin: 1.5rem 0;">
+      <p><strong>append</strong> — Veri hiç güncellenmiyorsa</p>
+      <p><strong>merge</strong> — Satırlar güncelleniyor, history önemli değilse</p>
+      <p><strong>insert_overwrite</strong> — Partition bazlı warehouse + tarih bazlı güncelleme</p>
+    </div>
+
+    <h2>Sık yapılan hatalar</h2>
+    <ul>
+      <li><strong>is_incremental() unutmak:</strong> İlk çalıştırmada tüm veri, sonrakilerde incremental — bunu kontrol eden <code>is_incremental()</code> makro'sudur.</li>
+      <li><strong>Yanlış unique_key:</strong> Merge'de unique_key tek olmalı. Composite key için <code>['order_id', 'line_item_id']</code> gibi array verebilirsin.</li>
+      <li><strong>Lookup sorgusunu yanlış yazmak:</strong> <code>select max(updated_at) from this</code> çok pahalı olabilir. Bir "watermark" tablosu tutabilirsin.</li>
+    </ul>
+
+    <h2>Sonuç</h2>
+    <p>
+      Doğru incremental strateji seçmek, hem performans hem de maliyet açısından kritik. Küçük tablolarda fark etmez, ama milyonlarca satıra ulaştığında ciddi fark yaratır. Verinin doğasını iyi anlamak, doğru stratejiyi seçmenin yarısı.
+    </p>
+  </div>
+
+  <div class="article-tags">
+    <span class="chip">#dbt</span>
+    <span class="chip">#best-practices</span>
+    <span class="chip">#data-engineering</span>
+  </div>
+
+  <nav class="post-nav" style="margin-top: 2rem;" aria-label="Yazı navigasyonu">
+    <a href="airflow-patterns.html" class="post-nav-prev">
+      <span class="nav-label">← Önceki yazı</span>
+      <span class="nav-title">Airflow Üretim-Grade DAG</span>
+    </a>
+    <a href="merhaba-dunya.html" class="post-nav-next" style="text-align: right;">
+      <span class="nav-label">Sonraki yazı →</span>
+      <span class="nav-title">Merhaba dünya</span>
+    </a>
+  </nav>
+
+  <p class="back-link" style="margin-top: 2rem;"><a href="../blog.html">← Tüm yazılara dön</a></p>
+</article>
+
+</main>
+
+<footer class="footer">
+  <div class="container">
+    <div class="footer-inner">
+      <div class="footer-brand">
+        <div class="nav-logo-mark">Y</div>
+        <div>
+          <strong>Yusa Güneş</strong>
+          <p>Veri bilimci & mühendis. Ankara'dan.</p>
+        </div>
+      </div>
+      <div class="footer-col">
+        <h4>Site</h4>
+        <ul>
+          <li><a href="../about.html">Hakkımda</a></li>
+          <li><a href="../resume.html">Özgeçmiş</a></li>
+          <li><a href="../projects.html">Projeler</a></li>
+          <li><a href="../blog.html">Blog</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>İletişim</h4>
+        <ul>
+          <li><a href="mailto:yusagunes36@gmail.com">E-posta</a></li>
+          <li><a href="https://github.com/yusagunes" target="_blank" rel="noopener">GitHub</a></li>
+          <li><a href="https://linkedin.com/in/yusagunes" target="_blank" rel="noopener">LinkedIn</a></li>
+          <li><a href="../contact.html">İletişim formu</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <p>© <span id="current-year"></span> Yusa Güneş. Tüm hakları saklıdır.</p>
+      <div class="footer-social">
+        <a href="https://github.com/yusagunes" aria-label="GitHub" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.4 3-.405 1.02.005 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
+        </a>
+        <a href="https://linkedin.com/in/yusagunes" aria-label="LinkedIn" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>
+        </a>
+        <a href="mailto:yusagunes36@gmail.com" aria-label="E-posta">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+        </a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<script src="../assets/js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Airflow'da Üretim-Grade DAG Tasarımı — Yusa Güneş</title>
+  <meta name="description" content="Idempotency, alerting, retry stratejileri. Bir Airflow DAG'ını production'a nasıl hazırlarsın?">
+  <meta name="theme-color" content="#ffffff">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%236366f1'/%3E%3Cstop offset='100%25' stop-color='%238b5cf6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='100' height='100' rx='22' fill='url(%23g)'/%3E%3Ctext x='50' y='68' font-size='60' text-anchor='middle' fill='white' font-family='sans-serif' font-weight='700'%3EY%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="../assets/css/main.css">
+  <link rel="stylesheet" href="../assets/css/components.css">
+</head>
+<body>
+
+<a href="#main" class="skip-link">İçeriğe atla</a>
+
+<nav class="nav" aria-label="Ana navigasyon">
+  <div class="container nav-inner">
+    <a href="../index.html" class="nav-logo">
+      <span class="nav-logo-mark">Y</span>
+      <span>Yusa Güneş</span>
+    </a>
+    <ul class="nav-links">
+      <li><a href="../index.html" class="nav-link">Ana sayfa</a></li>
+      <li><a href="../about.html" class="nav-link">Hakkımda</a></li>
+      <li><a href="../resume.html" class="nav-link">Özgeçmiş</a></li>
+      <li><a href="../projects.html" class="nav-link">Projeler</a></li>
+      <li><a href="../blog.html" class="nav-link">Blog</a></li>
+      <li><a href="../contact.html" class="nav-link">İletişim</a></li>
+    </ul>
+    <div class="nav-actions">
+      <button class="theme-toggle" aria-label="Tema değiştir">
+        <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+      </button>
+      <button class="nav-toggle" aria-label="Menüyü aç" aria-expanded="false">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
+    </div>
+  </div>
+</nav>
+
+<main id="main">
+
+<article class="article">
+  <header class="article-header">
+    <div class="article-meta">
+      <time datetime="2026-06-20">20 Haziran 2026</time>
+      <span>·</span>
+      <span>6 dk okuma</span>
+    </div>
+    <h1 class="article-title">Airflow'da Üretim-Grade DAG Tasarımı</h1>
+    <p class="article-excerpt">Idempotency, alerting, retry stratejileri. Bir Airflow DAG'ını production'a hazır hale nasıl getirirsin?</p>
+    <div class="tag-list" style="justify-content: center;">
+      <span class="chip chip-accent">Airflow</span>
+      <span class="chip">Best Practices</span>
+      <span class="chip">Python</span>
+    </div>
+  </header>
+
+  <div class="article-cover" aria-hidden="true">🌊</div>
+
+  <div class="article-body">
+    <p>
+      Airflow, hızlı bir şekilde "çalışan" bir DAG yazmak için harika. Ama onu production'a koyduğunuz an, yeni sorular ortaya çıkıyor: ya network hatası olursa? Aynı job iki kez çalışırsa? Saat 3'te patlarsa haberim olur mu?
+    </p>
+    <p>
+      Bu yazıda, kendi production deneyimlerimden derlediğim, bir DAG'ı <strong>gerçekten production-grade</strong> yapan prensipleri paylaşıyorum.
+    </p>
+
+    <h2>1. Idempotency Her Şeyin Temeli</h2>
+    <p>
+      Bir task'ı iki kez çalıştırmak, aynı sonucu vermeli. Bu basit kural, retry'ları, backfill'leri ve gece 3'teki panikleri güvenli hale getirir.
+    </p>
+    <pre><code>@task
+def extract_events(date: str):
+    """Sadece o güne ait veriyi çek — iki kez çalışsa da aynı."""
+    output_path = f"s3://bucket/events/{date}/"
+    fetch_from_api(start=date, end=date, dest=output_path)
+    return output_path</code></pre>
+
+    <h2>2. Retry + Exponential Backoff</h2>
+    <p>
+      Default 3 retry iyi bir başlangıç, ama network veya rate limit hatalarında hemen ard arda retry yapmak işi daha da kötüleştirir.
+    </p>
+    <pre><code>default_args = {
+    "retries": 5,
+    "retry_delay": timedelta(minutes=1),
+    "retry_exponential_backoff": True,
+    "max_retry_delay": timedelta(minutes=30),
+}</code></pre>
+
+    <h2>3. Alerting: Sessiz Hata Olmaz</h2>
+    <p>
+      Bir task başarısız olduğunda haberin olmalı. Slack alert'leri en pratik çözüm.
+    </p>
+    <pre><code>def task_fail_slack_alert(context):
+    """Task başarısız olduğunda Slack'e bildirim gönder."""
+    ti = context.get("task_instance")
+    slack_msg = f"""
+    :red_circle: Task Failed
+    *DAG*: {ti.dag_id}
+    *Task*: {ti.task_id}
+    *Log*: {ti.log_url}
+    """
+    send_to_slack(slack_msg)</code></pre>
+
+    <h2>4. Backfill Stratejisi</h2>
+    <p>
+      Tarihsel bir veriyi tekrar işlemen gerektiğinde, tüm pipeline'ı baştan çalıştırmak yerine sadece değişen tarihleri işle.
+    </p>
+    <pre><code>@dag(
+    start_date=datetime(2025, 1, 1),
+    catchup=False,  # geçmiş tarihleri otomatik çalıştırma
+    max_active_runs=3,
+)
+def daily_etl():
+    ...
+</code></pre>
+
+    <h2>5. Connection ve Variable Yönetimi</h2>
+    <p>
+      Connection'ları hard-code etme. Airflow Connections'ta tut, secret'ları env'den inject et.
+    </p>
+
+    <h2>6. Observability: Ne Oluyor?</h2>
+    <p>
+      Bir task ne kadar sürdü? Memory ne kadar yedi? Hangi sorgu yavaşladı?
+    </p>
+    <ul>
+      <li>Task'lere <code>execution_timeout</code> koy</li>
+      <li>Spark/Hive job'ları için Spark UI'ya link bırak</li>
+      <li>OpenLineage veya Marquez ile lineage takip et</li>
+    </ul>
+
+    <h2>Sonuç</h2>
+    <p>
+      Production-grade bir DAG yazmak, "çalışıyor" demenin ötesinde, "<strong>güvenilir, gözlemlenebilir ve geri alınabilir</strong>" olmasını sağlamaktır. Bu prensipleri uygulamak, ilk başta ekstra efor gibi görünür ama 3 ay sonra o pipeline sizi kurtarır.
+    </p>
+  </div>
+
+  <div class="article-tags">
+    <span class="chip">#airflow</span>
+    <span class="chip">#best-practices</span>
+    <span class="chip">#data-engineering</span>
+    <span class="chip">#python</span>
+  </div>
+
+  <nav class="post-nav" style="margin-top: 2rem;" aria-label="Yazı navigasyonu">
+    <a href="merhaba-dunya.html" class="post-nav-prev">
+      <span class="nav-label">← Önceki yazı</span>
+      <span class="nav-title">Merhaba dünya</span>
+    </a>
+    <a href="dbt-incremental.html" class="post-nav-next" style="text-align: right;">
+      <span class="nav-label">Sonraki yazı →</span>
+      <span class="nav-title">dbt Incremental Modeller</span>
+    </a>
+  </nav>
+
+  <p class="back-link" style="margin-top: 2rem;"><a href="../blog.html">← Tüm yazılara dön</a></p>
+</article>
+
+</main>
+
+<footer class="footer">
+  <div class="container">
+    <div class="footer-inner">
+      <div class="footer-brand">
+        <div class="nav-logo-mark">Y</div>
+        <div>
+          <strong>Yusa Güneş</strong>
+          <p>Veri bilimci & mühendis. Ankara'dan.</p>
+        </div>
+      </div>
+      <div class="footer-col">
+        <h4>Site</h4>
+        <ul>
+          <li><a href="../about.html">Hakkımda</a></li>
+          <li><a href="../resume.html">Özgeçmiş</a></li>
+          <li><a href="../projects.html">Projeler</a></li>
+          <li><a href="../blog.html">Blog</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>İletişim</h4>
+        <ul>
+          <li><a href="mailto:yusagunes36@gmail.com">E-posta</a></li>
+          <li><a href="https://github.com/yusagunes" target="_blank" rel="noopener">GitHub</a></li>
+          <li><a href="https://linkedin.com/in/yusagunes" target="_blank" rel="noopener">LinkedIn</a></li>
+          <li><a href="../contact.html">İletişim formu</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <p>© <span id="current-year"></span> Yusa Güneş. Tüm hakları saklıdır.</p>
+      <div class="footer-social">
+        <a href="https://github.com/yusagunes" aria-label="GitHub" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.4 3-.405 1.02.005 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
+        </a>
+        <a href="https://linkedin.com/in/yusagunes" aria-label="LinkedIn" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>
+        </a>
+        <a href="mailto:yusagunes36@gmail.com" aria-label="E-posta">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+        </a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<script src="../assets/js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PySpark DataFrame Optimizasyonu — 5 Altın Kural — Yusa Güneş</title>
+  <meta name="description" content="Partition stratejisi, broadcast join, predicate pushdown. PySpark işlerini 10x hızlandıran pratikler.">
+  <meta name="theme-color" content="#ffffff">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%236366f1'/%3E%3Cstop offset='100%25' stop-color='%238b5cf6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='100' height='100' rx='22' fill='url(%23g)'/%3E%3Ctext x='50' y='68' font-size='60' text-anchor='middle' fill='white' font-family='sans-serif' font-weight='700'%3EY%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="../assets/css/main.css">
+  <link rel="stylesheet" href="../assets/css/components.css">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    "headline": "PySpark DataFrame Optimizasyonu — 5 Altın Kural",
+    "datePublished": "2026-06-25",
+    "author": {"@type": "Person", "name": "Yusa Güneş"}
+  }
+  </script>
+</head>
+<body>
+
+<a href="#main" class="skip-link">İçeriğe atla</a>
+
+<nav class="nav" aria-label="Ana navigasyon">
+  <div class="container nav-inner">
+    <a href="../index.html" class="nav-logo">
+      <span class="nav-logo-mark">Y</span>
+      <span>Yusa Güneş</span>
+    </a>
+    <ul class="nav-links">
+      <li><a href="../index.html" class="nav-link">Ana sayfa</a></li>
+      <li><a href="../about.html" class="nav-link">Hakkımda</a></li>
+      <li><a href="../resume.html" class="nav-link">Özgeçmiş</a></li>
+      <li><a href="../projects.html" class="nav-link">Projeler</a></li>
+      <li><a href="../blog.html" class="nav-link">Blog</a></li>
+      <li><a href="../contact.html" class="nav-link">İletişim</a></li>
+    </ul>
+    <div class="nav-actions">
+      <button class="theme-toggle" aria-label="Tema değiştir">
+        <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+      </button>
+      <button class="nav-toggle" aria-label="Menüyü aç" aria-expanded="false">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
+    </div>
+  </div>
+</nav>
+
+<main id="main">
+
+<article class="article">
+  <header class="article-header">
+    <div class="article-meta">
+      <time datetime="2026-06-25">25 Haziran 2026</time>
+      <span>·</span>
+      <span>8 dk okuma</span>
+    </div>
+    <h1 class="article-title">PySpark DataFrame Optimizasyonu — 5 Altın Kural</h1>
+    <p class="article-excerpt">Partition stratejisi, broadcast join, predicate pushdown. PySpark işlerini 10x hızlandıran pratikler.</p>
+    <div class="tag-list" style="justify-content: center;">
+      <span class="chip chip-accent">Spark</span>
+      <span class="chip">Performance</span>
+      <span class="chip">Python</span>
+    </div>
+  </header>
+
+  <div class="article-cover" aria-hidden="true">⚡</div>
+
+  <div class="article-body">
+    <p>
+      PySpark ile büyük veri işleri yazarken, kodun "çalışıyor olması" yetmez. Onlarca GB'lık veri üzerinde koşan bir job'un 30 dakika mı yoksa 3 dakika mı sürdüğü, tamamen yazdığın küçük detaylara bağlı. Bu yazıda, production'da job sürelerini ciddi şekilde düşüren 5 pratiği paylaşıyorum.
+    </p>
+
+    <h2>1. Predicate Pushdown'u Doğru Kullan</h2>
+    <p>
+      Spark, filtreleri mümkün olduğunca erken uygulamaya çalışır. Ama bu her zaman olmaz. Özellikle Parquet gibi columnar formatlarda, okuma anında filtreyi aşağı itmek büyük fark yaratır.
+    </p>
+    <pre><code>df = spark.read.parquet("data/events/")
+df.filter(F.col("event_date") &gt;= "2026-01-01") \
+  .filter(F.col("country") == "TR") \
+  .groupBy("user_id") \
+  .agg(F.count("*").alias("event_count"))</code></pre>
+    <p>
+      Bu sorgu, tüm dosyaları okumadan önce partition pruning ve predicate pushdown tetikler. Sorgu planını <code>df.explain(True)</code> ile kontrol et — <code>PushedFilters</code> görüyorsan doğru yoldasın.
+    </p>
+
+    <h2>2. Broadcast Join: Küçük Tablolar İçin Hayat Kurtarır</h2>
+    <p>
+      Default olarak Spark, join'lerde sort-merge yapar. Büyük + küçük tabloyu birleştiriyorsan, küçük tabloyu broadcast etmek shuffle'ı tamamen ortadan kaldırır.
+    </p>
+    <pre><code>from pyspark.sql.functions import broadcast
+
+result = large_df.join(
+    broadcast(small_df),  # ~200MB'tan küçük tablolar için ideal
+    on="user_id",
+    how="left"
+)</code></pre>
+    <p>
+      Kural: <code>spark.sql.autoBroadcastJoinThreshold</code> default 10MB. Bunu ihtiyacına göre ayarla, ama 200MB üstü için broadcast yapma — executor memory yetersiz kalır.
+    </p>
+
+    <blockquote>
+      <strong>Pratik ipucu:</strong> Broadcast threshold'unu Spark UI'da shuffle okumalarını görerek ayarla. Çok az shuffle = çok hızlı job.
+    </blockquote>
+
+    <h2>3. Partition Sayısını Doğru Tut</h2>
+    <p>
+      Çok fazla partition → task scheduling overhead. Çok az → executor'lar boş bekler. İyi bir kural: her partition ~128MB-256MB veri içersin.
+    </p>
+    <pre><code># Yeniden partition
+df = df.repartition(200, "user_id")
+
+# Veya coalesce ile birleştir
+df = df.coalesce(50)</code></pre>
+    <p>
+      <code>repartition</code> shuffle yapar (ama paralelliği artırır), <code>coalesce</code> shuffle'sız birleştirir (sadece küçültmek için).
+    </p>
+
+    <h2>4. Cache'i Akıllı Kullan</h2>
+    <p>
+      Bir DataFrame'i birden fazla action'da kullanıyorsan cache'le. Ama her şeyi cache'leme — memory şişer, GC patlar.
+    </p>
+    <pre><code>from pyspark.storagelevel import StorageLevel
+
+df_filtered = df.filter(...).cache()  # Sadece tekrar kullanacaksan
+df_filtered.count()  # materialization tetikler
+result1 = df_filtered.groupBy(...).agg(...)
+result2 = df_filtered.join(...)
+
+df_filtered.unpersist()  # iş bitince bırak</code></pre>
+
+    <h2>5. UDF Yerine Pandas/Python Built-in Kullan</h2>
+    <p>
+      Python UDF'ler JVM ↔ Python arasında veri taşır. Bu yavaştır. Mümkün olduğunca Spark SQL fonksiyonlarını veya pandas UDF kullan.
+    </p>
+    <pre><code># YAVAŞ — Python UDF
+@udf("string")
+def normalize(s):
+    return s.strip().lower() if s else None
+
+# HIZLI — Native SQL function
+from pyspark.sql.functions import lower, trim
+df.withColumn("name_norm", lower(trim(F.col("name"))))</code></pre>
+
+    <h2>Sonuç</h2>
+    <p>
+      Bu 5 kural, kendi production job'larımda <strong>8x ile 15x arası hızlanma</strong> sağladı. Hangisinin en büyük etkiyi yarattığı veriye göre değişir ama predicate pushdown ve broadcast join hemen her iş yükünde fark yaratır.
+    </p>
+    <p>
+      Bir sonraki yazıda: <strong>Spark UI okuma</strong> — executor memory, shuffle spill ve skewed partition tespiti üzerine.
+    </p>
+  </div>
+
+  <div class="article-tags">
+    <span class="chip">#spark</span>
+    <span class="chip">#performance</span>
+    <span class="chip">#python</span>
+    <span class="chip">#data-engineering</span>
+  </div>
+
+  <nav class="post-nav" style="margin-top: 2rem;" aria-label="Yazı navigasyonu">
+    <a href="airflow-patterns.html" class="post-nav-prev">
+      <span class="nav-label">← Önceki yazı</span>
+      <span class="nav-title">Airflow'da Üretim-Grade DAG</span>
+    </a>
+    <div class="post-nav-next"></div>
+  </nav>
+
+  <p class="back-link" style="margin-top: 2rem;"><a href="../blog.html">← Tüm yazılara dön</a></p>
+</article>
+
+</main>
+
+<footer class="footer">
+  <div class="container">
+    <div class="footer-inner">
+      <div class="footer-brand">
+        <div class="nav-logo-mark">Y</div>
+        <div>
+          <strong>Yusa Güneş</strong>
+          <p>Veri bilimci & mühendis. Ankara'dan.</p>
+        </div>
+      </div>
+      <div class="footer-col">
+        <h4>Site</h4>
+        <ul>
+          <li><a href="../about.html">Hakkımda</a></li>
+          <li><a href="../resume.html">Özgeçmiş</a></li>
+          <li><a href="../projects.html">Projeler</a></li>
+          <li><a href="../blog.html">Blog</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>İletişim</h4>
+        <ul>
+          <li><a href="mailto:yusagunes36@gmail.com">E-posta</a></li>
+          <li><a href="https://github.com/yusagunes" target="_blank" rel="noopener">GitHub</a></li>
+          <li><a href="https://linkedin.com/in/yusagunes" target="_blank" rel="noopener">LinkedIn</a></li>
+          <li><a href="../contact.html">İletişim formu</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <p>© <span id="current-year"></span> Yusa Güneş. Tüm hakları saklıdır.</p>
+      <div class="footer-social">
+        <a href="https://github.com/yusagunes" aria-label="GitHub" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.4 3-.405 1.02.005 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
+        </a>
+        <a href="https://linkedin.com/in/yusagunes" aria-label="LinkedIn" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>
+        </a>
+        <a href="mailto:yusagunes36@gmail.com" aria-label="E-posta">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+        </a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<script src="../assets/js/main.js"></script>
+</body>
+</html>
